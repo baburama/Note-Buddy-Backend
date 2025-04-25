@@ -31,13 +31,8 @@ load_dotenv()
 
 app = Flask(__name__)
 # Enable CORS for all routes
-CORS(app, resources={r"/*": {
-    "origins": [
-        "http://localhost:3000",  # Local development
-        "https://your-app-name.vercel.app",  # Your Vercel app
-        # Add any additional domains here
-    ]
-}})
+CORS(app, resources={r"/*": {"origins": "*"}})
+
 # Secret key for sessions
 app.secret_key = os.getenv("SECRET_KEY", "your-secret-key")
 
