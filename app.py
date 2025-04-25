@@ -14,6 +14,8 @@ import datetime
 import sys
 import logging
 import certifi
+from urllib.parse import urlparse, parse_qs
+
 
 # Configure logging
 logging.basicConfig(
@@ -234,17 +236,24 @@ def login():
 @app.post('/summary')
 @auth_required
 def summary():
-    data = request.get_json()
-    url = data.get('URL','')
+    data = request.get_json() or {}
+    url  = data.get('URL','').strip()
+    if not url:
+        return jsonify(error="URL required"), 400
+
+    # robustly extract the "v" query-param
+    parsed = urlparse(url)
+    qs = parse_qs(parsed.query)
+    video_id = qs.get('v', [None])[0]
+    if not video_id:
+        return jsonify(error="Could not extract video ID from URL"), 400
+
     try:
-        videoId = url.split('=')[1]
-        logger.info("Generating summary for YouTube video: %s", videoId)
-        transcript = getTranscript(videoId)
-        summary = summarizeText(transcript)
+        transcript = getTranscript(video_id)
+        summary    = summarizeText(transcript)
         return jsonify({'Summary': summary}), 200
     except Exception as e:
-        logger.error("Summary generation failed: %s", str(e))
-        return jsonify({'error': str(e)}), 400
+        return jsonify({'error': str(e)}), 500
 
 def getTranscript(id):
     try:
