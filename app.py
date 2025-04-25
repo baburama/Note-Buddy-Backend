@@ -1,5 +1,4 @@
 from flask import Flask, request, jsonify, session, redirect
-from youtube_transcript_api import YouTubeTranscriptApi
 import os
 import pymongo
 from dotenv import load_dotenv
@@ -15,8 +14,7 @@ import sys
 import logging
 import certifi
 from urllib.parse import urlparse, parse_qs
-from googleapiclient.discovery import build
-from google.oauth2 import service_account
+
 
 # Configure logging
 logging.basicConfig(
@@ -46,7 +44,6 @@ if MONGODB_URI and "retryWrites" not in MONGODB_URI:
         MONGODB_URI += "?retryWrites=true"
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY")
-YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")  # Add this to your .env file
 
 # Get CA certificates
 ca = certifi.where()
@@ -230,64 +227,71 @@ def login():
         logger.error("Login failed: %s", str(e))
         return jsonify({"error": f"Login failed: {str(e)}"}), 500
 
-# New method to get transcript from YouTube Data API
-def get_youtube_transcript_with_api(video_id):
+# New function to get transcript from YouTube using AssemblyAI
+def get_youtube_transcript_with_assemblyai(video_url):
     try:
-        # First try with youtube_transcript_api (will work locally)
-        logger.info("Attempting to get transcript with youtube_transcript_api for video ID: %s", video_id)
-        try:
-            transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
-            transcript = ' '.join([d['text'] for d in transcript_list])
-            logger.info("Transcript fetched successfully with youtube_transcript_api")
-            return transcript
-        except Exception as local_error:
-            logger.warning("youtube_transcript_api failed: %s. Trying official YouTube API...", str(local_error))
+        logger.info("Fetching transcript with AssemblyAI for video URL: %s", video_url)
         
-        # If the above fails, try with the official YouTube API
-        logger.info("Fetching transcript with official YouTube API for video ID: %s", video_id)
+        if not ASSEMBLYAI_API_KEY:
+            raise Exception("AssemblyAI API key is not configured")
         
-        if not YOUTUBE_API_KEY:
-            raise Exception("YouTube API key is not configured")
+        # Set up the headers for all AssemblyAI API requests
+        headers = {
+            "Authorization": ASSEMBLYAI_API_KEY,
+            "Content-Type": "application/json"
+        }
         
-        # Build the YouTube API client
-        youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
+        # Request a transcript from AssemblyAI
+        transcript_endpoint = "https://api.assemblyai.com/v2/transcript"
         
-        # First, get the caption tracks for the video
-        captions_response = youtube.captions().list(
-            part='snippet',
-            videoId=video_id
-        ).execute()
+        # Submit the YouTube URL directly to AssemblyAI
+        payload = {
+            "audio_url": video_url,
+            "language_code": "en"  # You can make this configurable
+        }
         
-        if 'items' not in captions_response or not captions_response['items']:
-            raise Exception("No captions found for this video")
+        # Submit the transcription request
+        logger.info("Submitting YouTube URL to AssemblyAI")
+        response = requests.post(transcript_endpoint, json=payload, headers=headers)
         
-        # Get the first available caption track ID
-        caption_id = captions_response['items'][0]['id']
+        if response.status_code != 200:
+            logger.error("AssemblyAI transcript request failed: %s", response.text)
+            raise Exception(f"AssemblyAI transcription request failed: {response.text}")
         
-        # Download the caption track
-        caption = youtube.captions().download(
-            id=caption_id,
-            tfmt='srt'  # SubRip format
-        ).execute()
+        # Get the transcript ID from the response
+        transcript_id = response.json()["id"]
+        logger.info("Transcript ID received: %s", transcript_id)
         
-        # Parse the SRT format to extract just the text
-        # Simple parsing - in production you might want a proper SRT parser
-        lines = caption.decode('utf-8').split('\n')
-        transcript_lines = []
+        # Wait for the transcription to complete
+        polling_endpoint = f"https://api.assemblyai.com/v2/transcript/{transcript_id}"
         
-        for i, line in enumerate(lines):
-            # Skip the line numbers and timestamps
-            if i % 4 == 2:  # Every 4th line (0-indexed) contains the actual text
-                transcript_lines.append(line)
-        
-        transcript = ' '.join(transcript_lines)
-        logger.info("Transcript fetched successfully with YouTube API (%d characters)", len(transcript))
-        
-        return transcript
+        # Poll until the transcription is complete
+        while True:
+            logger.info("Polling for transcript completion...")
+            polling_response = requests.get(polling_endpoint, headers=headers)
+            
+            if polling_response.status_code != 200:
+                logger.error("Failed to poll for transcript: %s", polling_response.text)
+                raise Exception(f"Failed to poll for transcript: {polling_response.text}")
+            
+            transcription_result = polling_response.json()
+            status = transcription_result["status"]
+            
+            if status == "completed":
+                logger.info("Transcription completed successfully")
+                return transcription_result["text"]
+            elif status == "error":
+                logger.error("Transcription failed: %s", transcription_result.get("error", "Unknown error"))
+                raise Exception(f"Transcription failed: {transcription_result.get('error', 'Unknown error')}")
+            
+            # If still processing, wait a bit before trying again
+            # In a production app, you might want to use an async approach or webhook
+            import time
+            time.sleep(3)
     
     except Exception as e:
-        logger.error("Error getting transcript for video ID %s: %s", video_id, str(e))
-        raise Exception(f"Error getting transcript: {str(e)}")
+        logger.error("Error getting transcript with AssemblyAI: %s", str(e))
+        raise Exception(f"Error getting transcript with AssemblyAI: {str(e)}")
 
 @app.post('/summary')
 @auth_required
@@ -297,19 +301,19 @@ def summary():
     if not url:
         return jsonify(error="URL required"), 400
 
-    # Robustly extract the "v" query-param
+    # Extract the video ID from the URL for logging purposes
     parsed = urlparse(url)
     qs = parse_qs(parsed.query)
     video_id = qs.get('v', [None])[0]
-    if not video_id:
-        return jsonify(error="Could not extract video ID from URL"), 400
+    logger.info("Processing summary request for video ID: %s", video_id)
 
     try:
-        # Use the new method that tries both approaches
-        transcript = get_youtube_transcript_with_api(video_id)
+        # Get transcript using AssemblyAI
+        transcript = get_youtube_transcript_with_assemblyai(url)
         summary = summarizeText(transcript)
         return jsonify({'Summary': summary}), 200
     except Exception as e:
+        logger.error("Error processing summary request: %s", str(e))
         return jsonify({'error': str(e)}), 500
 
 def summarizeText(text):
@@ -664,7 +668,7 @@ def health_check():
         'status': 'healthy',
         'mongodb': False,
         'openai': False,
-        'youtube_api': False
+        'assemblyai': False
     }
     
     # Check MongoDB connection
@@ -683,11 +687,11 @@ def health_check():
         logger.error("Health check - OpenAI API key missing or invalid")
         status['status'] = 'degraded'
     
-    # Simple check for YouTube API key
-    if YOUTUBE_API_KEY and len(YOUTUBE_API_KEY) > 10:
-        status['youtube_api'] = True
+    # Simple check for AssemblyAI API key
+    if ASSEMBLYAI_API_KEY and len(ASSEMBLYAI_API_KEY) > 10:
+        status['assemblyai'] = True
     else:
-        logger.error("Health check - YouTube API key missing or invalid")
+        logger.error("Health check - AssemblyAI API key missing or invalid")
         status['status'] = 'degraded'
     
     if status['status'] == 'healthy':
