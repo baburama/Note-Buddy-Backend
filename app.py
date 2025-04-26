@@ -1,4 +1,6 @@
 from flask import Flask, request, jsonify, session, redirect
+from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api.proxies import WebshareProxyConfig
 import os
 import pymongo
 from dotenv import load_dotenv
@@ -14,10 +16,6 @@ import sys
 import logging
 import certifi
 from urllib.parse import urlparse, parse_qs
-import subprocess
-import tempfile
-import uuid
-import yt_dlp  # Using yt-dlp instead of youtube-dl as it's more actively maintained
 
 
 # Configure logging
@@ -49,10 +47,17 @@ if MONGODB_URI and "retryWrites" not in MONGODB_URI:
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY")
 
-# Create temp directory for audio files if it doesn't exist
-TEMP_DIR = os.path.join(tempfile.gettempdir(), 'notebuddy_audio')
-os.makedirs(TEMP_DIR, exist_ok=True)
-logger.info(f"Using temporary directory for audio files: {TEMP_DIR}")
+# Initialize YouTube Transcript API with Webshare proxy
+PROXY_USERNAME = os.getenv("WEBSHARE_PROXY_USERNAME", "td-customer-GjlMS7dbw6w1-sessid-all194wi4b12ga5776-sesstime-10")
+PROXY_PASSWORD = os.getenv("WEBSHARE_PROXY_PASSWORD", "oJSdDwmajn1h")
+
+logger.info("Initializing YouTubeTranscriptApi with Webshare proxy")
+youtube_transcript_api = YouTubeTranscriptApi(
+    proxy_config=WebshareProxyConfig(
+        proxy_username=PROXY_USERNAME,
+        proxy_password=PROXY_PASSWORD,
+    )
+)
 
 # Get CA certificates
 ca = certifi.where()
@@ -236,136 +241,16 @@ def login():
         logger.error("Login failed: %s", str(e))
         return jsonify({"error": f"Login failed: {str(e)}"}), 500
 
-# New function to download audio from YouTube using yt-dlp and get transcript with AssemblyAI
-def get_youtube_transcript(video_url):
+# Function to get transcript using youtube_transcript_api with proxy support
+def getTranscript(video_id):
     try:
-        logger.info(f"Downloading audio from YouTube URL: {video_url}")
-        
-        # Extract video ID for naming the file
-        parsed = urlparse(video_url)
-        qs = parse_qs(parsed.query)
-        video_id = qs.get('v', [str(uuid.uuid4())])[0]
-        
-        # Create a temporary file path
-        temp_file = os.path.join(TEMP_DIR, f"{video_id}.mp3")
-        
-        # Configure yt-dlp options to directly download audio without requiring FFmpeg
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'outtmpl': temp_file,
-            'quiet': True,
-            'no_warnings': True,
-            'prefer_ffmpeg': False,  # Don't require FFmpeg
-            # Skip post-processing that requires FFmpeg
-            'postprocessors': [],
-        }
-        
-        # Download the audio
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            logger.info(f"Starting download of {video_id}")
-            ydl.download([video_url])
-            logger.info(f"Download completed, saved to {temp_file}")
-        
-        # Check if file exists and has content
-        if not os.path.exists(temp_file) or os.path.getsize(temp_file) == 0:
-            raise Exception(f"Failed to download audio file or file is empty: {temp_file}")
-        
-        # Now transcribe the audio with AssemblyAI
-        logger.info(f"Transcribing audio file: {temp_file}")
-        
-        # Upload the audio file to AssemblyAI
-        upload_endpoint = "https://api.assemblyai.com/v2/upload"
-        
-        headers = {
-            "authorization": ASSEMBLYAI_API_KEY
-        }
-        
-        with open(temp_file, 'rb') as f:
-            audio_data = f.read()
-        
-        # Upload the audio to AssemblyAI
-        logger.info(f"Uploading audio to AssemblyAI ({len(audio_data) / (1024*1024):.2f} MB)")
-        
-        upload_response = requests.post(
-            upload_endpoint,
-            headers=headers,
-            data=audio_data
-        )
-        
-        if upload_response.status_code != 200:
-            logger.error(f"AssemblyAI upload failed: {upload_response.text}")
-            raise Exception(f"AssemblyAI upload failed: {upload_response.text}")
-        
-        upload_url = upload_response.json()["upload_url"]
-        logger.info("Audio uploaded successfully to AssemblyAI")
-        
-        # Start the transcription process
-        transcript_endpoint = "https://api.assemblyai.com/v2/transcript"
-        
-        transcript_request = {
-            "audio_url": upload_url,
-            "language_code": "en"  # You can make this configurable
-        }
-        
-        logger.info("Requesting transcription from AssemblyAI")
-        
-        transcript_response = requests.post(
-            transcript_endpoint,
-            json=transcript_request,
-            headers=headers
-        )
-        
-        if transcript_response.status_code != 200:
-            logger.error(f"AssemblyAI transcription request failed: {transcript_response.text}")
-            raise Exception(f"AssemblyAI transcription request failed: {transcript_response.text}")
-        
-        transcript_id = transcript_response.json()["id"]
-        logger.info(f"Transcription request submitted successfully, ID: {transcript_id}")
-        
-        # Poll until the transcription is complete
-        polling_endpoint = f"https://api.assemblyai.com/v2/transcript/{transcript_id}"
-        
-        while True:
-            logger.info("Polling for transcript completion...")
-            polling_response = requests.get(polling_endpoint, headers=headers)
-            
-            if polling_response.status_code != 200:
-                logger.error(f"Failed to poll for transcript: {polling_response.text}")
-                raise Exception(f"Failed to poll for transcript: {polling_response.text}")
-            
-            transcription_result = polling_response.json()
-            status = transcription_result["status"]
-            
-            if status == "completed":
-                logger.info("Transcription completed successfully")
-                
-                # Clean up the temporary file
-                try:
-                    os.remove(temp_file)
-                    logger.info(f"Deleted temporary file: {temp_file}")
-                except Exception as e:
-                    logger.warning(f"Failed to delete temporary file {temp_file}: {str(e)}")
-                
-                return transcription_result["text"]
-            elif status == "error":
-                logger.error(f"Transcription failed: {transcription_result.get('error', 'Unknown error')}")
-                raise Exception(f"Transcription failed: {transcription_result.get('error', 'Unknown error')}")
-            
-            # If still processing, wait a bit before trying again
-            import time
-            time.sleep(3)
-    
+        logger.info("Fetching transcript for video ID: %s", video_id)
+        transcript_list = youtube_transcript_api.fetch(video_id).to_raw_data()
+        transcript = ' '.join([item['text'] for item in transcript_list])
+        logger.info("Transcript fetched successfully for video ID: %s (%d characters)", video_id, len(transcript))
+        return transcript
     except Exception as e:
-        logger.error(f"Error getting transcript: {str(e)}")
-        
-        # Clean up temp file in case of error
-        try:
-            if 'temp_file' in locals() and os.path.exists(temp_file):
-                os.remove(temp_file)
-                logger.info(f"Deleted temporary file after error: {temp_file}")
-        except Exception as cleanup_error:
-            logger.warning(f"Failed to delete temporary file: {str(cleanup_error)}")
-            
+        logger.error("Error getting transcript for video ID %s: %s", video_id, str(e))
         raise Exception(f"Error getting transcript: {str(e)}")
 
 @app.post('/summary')
@@ -376,19 +261,18 @@ def summary():
     if not url:
         return jsonify(error="URL required"), 400
 
-    # Extract the video ID from the URL for logging purposes
+    # robustly extract the "v" query-param
     parsed = urlparse(url)
     qs = parse_qs(parsed.query)
     video_id = qs.get('v', [None])[0]
-    logger.info("Processing summary request for video ID: %s", video_id)
+    if not video_id:
+        return jsonify(error="Could not extract video ID from URL"), 400
 
     try:
-        # Get transcript by downloading the audio first, then using AssemblyAI
-        transcript = get_youtube_transcript(url)
+        transcript = getTranscript(video_id)
         summary = summarizeText(transcript)
         return jsonify({'Summary': summary}), 200
     except Exception as e:
-        logger.error("Error processing summary request: %s", str(e))
         return jsonify({'error': str(e)}), 500
 
 def summarizeText(text):
@@ -743,7 +627,8 @@ def health_check():
         'status': 'healthy',
         'mongodb': False,
         'openai': False,
-        'assemblyai': False
+        'assemblyai': False,
+        'youtube_proxy': True  # We're now using hardcoded credentials if env vars aren't set
     }
     
     # Check MongoDB connection
