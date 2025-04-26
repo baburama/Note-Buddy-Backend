@@ -1,6 +1,6 @@
 from flask import Flask, request, jsonify, session, redirect
 from youtube_transcript_api import YouTubeTranscriptApi
-from youtube_transcript_api.proxies import WebshareProxyConfig
+from youtube_transcript_api.proxies import GenericProxyConfig
 import os
 import pymongo
 from dotenv import load_dotenv
@@ -47,15 +47,20 @@ if MONGODB_URI and "retryWrites" not in MONGODB_URI:
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY")
 
-# Initialize YouTube Transcript API with Webshare proxy
-PROXY_USERNAME = os.getenv("WEBSHARE_PROXY_USERNAME", "td-customer-GjlMS7dbw6w1-sessid-all194wi4b12ga5776-sesstime-10")
-PROXY_PASSWORD = os.getenv("WEBSHARE_PROXY_PASSWORD", "oJSdDwmajn1h")
+# Initialize YouTube Transcript API with proxy
+PROXY_HOST = "2isphj01.pr.thordata.net"
+PROXY_PORT = "9999"
+PROXY_USERNAME = "td-customer-GjlMS7dbw6w1-sessid-all194wi4b12ga5776-sesstime-10"
+PROXY_PASSWORD = "oJSdDwmajn1h"
 
-logger.info("Initializing YouTubeTranscriptApi with Webshare proxy")
+# Format the proxy URL with authentication credentials
+proxy_url = f"http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}"
+
+logger.info(f"Initializing YouTubeTranscriptApi with proxy: {PROXY_HOST}:{PROXY_PORT}")
 youtube_transcript_api = YouTubeTranscriptApi(
-    proxy_config=WebshareProxyConfig(
-        proxy_username=PROXY_USERNAME,
-        proxy_password=PROXY_PASSWORD,
+    proxy_config=GenericProxyConfig(
+        http_url=proxy_url,
+        https_url=proxy_url
     )
 )
 
