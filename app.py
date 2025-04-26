@@ -249,17 +249,15 @@ def get_youtube_transcript(video_url):
         # Create a temporary file path
         temp_file = os.path.join(TEMP_DIR, f"{video_id}.mp3")
         
-        # Configure yt-dlp options
+        # Configure yt-dlp options to directly download audio without requiring FFmpeg
         ydl_opts = {
             'format': 'bestaudio/best',
             'outtmpl': temp_file,
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }],
             'quiet': True,
             'no_warnings': True,
+            'prefer_ffmpeg': False,  # Don't require FFmpeg
+            # Skip post-processing that requires FFmpeg
+            'postprocessors': [],
         }
         
         # Download the audio
