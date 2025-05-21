@@ -16,19 +16,6 @@ import sys
 import logging
 import certifi
 from urllib.parse import urlparse, parse_qs
-# Format the proxy URL with authentication credentials
-# Import SSL module at the top of your file
-import ssl
-import urllib3
-import requests
-import os
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
-import re
-import html
-import time
-
-
 
 
 # Configure logging
@@ -59,29 +46,15 @@ if MONGODB_URI and "retryWrites" not in MONGODB_URI:
         MONGODB_URI += "?retryWrites=true"
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY")
-YOUTUBE_API_KEY = "AIzaSyBY0nY2kk7G7yCCvU0wwPnXRAxWTxF3RDc"
-
 
 # Initialize YouTube Transcript API with proxy
-#debug for expiration
 PROXY_HOST = "2isphj01.pr.thordata.net"
 PROXY_PORT = "9999"
-PROXY_USERNAME = "td-customer-GjlMS7dbw6w1-sessid-alll3s09ym5pbuy713-sesstime-10"
+PROXY_USERNAME = "td-customer-GjlMS7dbw6w1-sessid-all194wi4b12ga5776-sesstime-10"
 PROXY_PASSWORD = "oJSdDwmajn1h"
-
-
 
 # Format the proxy URL with authentication credentials
 proxy_url = f"http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}"
-
-# Configure SSL context
-ssl_context = ssl.create_default_context()
-ssl_context.check_hostname = False
-ssl_context.verify_mode = ssl.CERT_NONE
-ssl_context.set_ciphers('DEFAULT@SECLEVEL=1')
-
-# Disable SSL warnings for development only
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logger.info(f"Initializing YouTubeTranscriptApi with proxy: {PROXY_HOST}:{PROXY_PORT}")
 youtube_transcript_api = YouTubeTranscriptApi(
@@ -146,13 +119,6 @@ try:
     logger.info("OpenAI client initialized")
 except Exception as e:
     logger.critical("Failed to initialize OpenAI client: %s", str(e))
-# Initialize the YouTube API client with more detailed error handling
-try:
-    youtube_client = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
-    logger.info("YouTube API client initialized successfully")
-except Exception as e:
-    youtube_client = None
-    logger.critical("Failed to initialize YouTube API client: %s", str(e))
 
 # Add security headers
 @app.after_request
@@ -279,118 +245,19 @@ def login():
     except Exception as e:
         logger.error("Login failed: %s", str(e))
         return jsonify({"error": f"Login failed: {str(e)}"}), 500
-def test_youtube_api():
-    """Test the YouTube API connectivity with a simple call"""
-    try:
-        # Simple API call to test the key - get basic video info
-        response = youtube_client.videos().list(
-            part="snippet",
-            id="_4DWaqTGvVg"  # Test with your video ID
-        ).execute()
-        
-        if response and 'items' in response:
-            logger.info("YouTube API basic test successful")
-            return True
-        else:
-            logger.warning("YouTube API returned empty response")
-            return False
-    except HttpError as e:
-        logger.error("YouTube API test error: %s - %s", 
-                    e.resp.status, 
-                    e.content.decode('utf-8') if hasattr(e.content, 'decode') else e.content)
-        return False
-    except Exception as e:
-        logger.error("YouTube API test exception: %s", str(e))
-        return False
 
-# Call this after initialization
-if youtube_client:
-    api_works = test_youtube_api()
-    logger.info("YouTube API test result: %s", "Success" if api_works else "Failed")
-else:
-    logger.warning("Skipping YouTube API test as client initialization failed")
 # Function to get transcript using youtube_transcript_api with proxy support
 def getTranscript(video_id):
     try:
-        logger.info(f"Fetching transcript for video ID: {video_id} using AssemblyAI")
-        import time  # Import time module locally if you can't add it at the top
-        
-        # YouTube video URL
-        youtube_url = f"https://www.youtube.com/watch?v={video_id}"
-        
-        # AssemblyAI API endpoint and headers
-        transcript_endpoint = "https://api.assemblyai.com/v2/transcript"
-        headers = {
-            "authorization": ASSEMBLYAI_API_KEY,
-            "content-type": "application/json"
-        }
-        
-        # Request body with the YouTube URL
-        data = {
-            "audio_url": youtube_url,
-            "language_code": "en"
-        }
-        
-        # Submit the transcription request
-        logger.info("Submitting YouTube URL to AssemblyAI")
-        response = requests.post(transcript_endpoint, json=data, headers=headers)
-        
-        if response.status_code != 200:
-            logger.error(f"AssemblyAI request failed: {response.text}")
-            raise Exception(f"AssemblyAI request failed: {response.text}")
-        
-        transcript_id = response.json()["id"]
-        logger.info(f"Transcription request submitted, ID: {transcript_id}")
-        
-        # Poll for the transcription result
-        polling_endpoint = f"https://api.assemblyai.com/v2/transcript/{transcript_id}"
-        
-        logger.info("Polling for transcription result...")
-        
-        # Poll until transcription is complete (with timeout)
-        max_polls = 60  # Maximum polling attempts (5 min at 5-second intervals)
-        poll_count = 0
-        
-        while poll_count < max_polls:
-            poll_count += 1
-            
-            polling_response = requests.get(polling_endpoint, headers=headers)
-            
-            if polling_response.status_code != 200:
-                logger.error(f"AssemblyAI polling failed: {polling_response.text}")
-                raise Exception(f"AssemblyAI polling failed: {polling_response.text}")
-                
-            polling_result = polling_response.json()
-            status = polling_result['status']
-            
-            logger.info(f"Transcription status ({poll_count}/{max_polls}): {status}")
-            
-            if status == 'completed':
-                transcript_text = polling_result['text']
-                logger.info(f"Transcription completed: {len(transcript_text)} characters")
-                return transcript_text
-            elif status == 'error':
-                error_message = polling_result.get('error', 'Unknown error')
-                logger.error(f"AssemblyAI transcription error: {error_message}")
-                raise Exception(f"AssemblyAI transcription error: {error_message}")
-            elif status == 'processed':
-                # Sometimes 'processed' is returned but text is available
-                if 'text' in polling_result and polling_result['text']:
-                    transcript_text = polling_result['text']
-                    logger.info(f"Transcription processed: {len(transcript_text)} characters")
-                    return transcript_text
-                    
-            # If not complete, wait before polling again
-            logger.info(f"Waiting for transcription to complete... (attempt {poll_count}/{max_polls})")
-            time.sleep(5)  # Wait 5 seconds between polls
-            
-        # If we exit the loop, we've timed out
-        logger.error("Transcription timed out after maximum polling attempts")
-        raise Exception("Transcription timed out. Please try again later.")
-    
+        logger.info("Fetching transcript for video ID: %s", video_id)
+        transcript_list = youtube_transcript_api.fetch(video_id).to_raw_data()
+        transcript = ' '.join([item['text'] for item in transcript_list])
+        logger.info("Transcript fetched successfully for video ID: %s (%d characters)", video_id, len(transcript))
+        return transcript
     except Exception as e:
-        logger.error(f"Error getting transcript for video ID {video_id}: {str(e)}")
+        logger.error("Error getting transcript for video ID %s: %s", video_id, str(e))
         raise Exception(f"Error getting transcript: {str(e)}")
+
 @app.post('/summary')
 @auth_required
 def summary():
