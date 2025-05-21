@@ -16,7 +16,9 @@ import sys
 import logging
 import certifi
 from urllib.parse import urlparse, parse_qs
-
+#pdf
+import PyPDF2
+from io import BytesIO
 
 # Configure logging
 logging.basicConfig(
@@ -311,6 +313,119 @@ def summarizeText(text):
     except Exception as e:
         logger.error("Error summarizing text: %s", str(e))
         raise Exception(f"Error summarizing text: {str(e)}")
+#pdf routes
+@app.route('/upload-pdf', methods=['POST'])
+@auth_required
+def upload_pdf():
+    username = request.username
+    logger.info("PDF upload request from user: %s", username)
+    
+    # Check if the request contains a file
+    if 'pdf' not in request.files:
+        logger.warning("No PDF file provided in request")
+        return jsonify({"error": "No PDF file provided"}), 400
+    
+    pdf_file = request.files['pdf']
+    if pdf_file.filename == '':
+        logger.warning("Empty PDF filename provided")
+        return jsonify({"error": "No PDF file selected"}), 400
+    
+    # Check file extension
+    if not pdf_file.filename.lower().endswith('.pdf'):
+        logger.warning("Invalid file type: %s", pdf_file.filename)
+        return jsonify({"error": "File must be a PDF"}), 400
+    
+    # Check file size - limiting to 10MB for PDFs
+    MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB in bytes
+    pdf_file.seek(0, os.SEEK_END)
+    file_size = pdf_file.tell()
+    pdf_file.seek(0)  # Reset file pointer to beginning
+    
+    logger.info("Received PDF file: %s, size: %.2f MB", pdf_file.filename, file_size / (1024 * 1024))
+    
+    if file_size > MAX_FILE_SIZE:
+        logger.warning("File too large: %.2f MB (max %.2f MB)", file_size / (1024 * 1024), MAX_FILE_SIZE / (1024 * 1024))
+        return jsonify({"error": f"File too large. Maximum size is {MAX_FILE_SIZE / (1024 * 1024)}MB"}), 413
+    
+    try:
+        # Extract text from PDF
+        pdf_data = pdf_file.read()
+        pdf_reader = PyPDF2.PdfReader(BytesIO(pdf_data))
+        
+        # Extract text from all pages
+        extracted_text = ""
+        for page_num, page in enumerate(pdf_reader.pages):
+            try:
+                page_text = page.extract_text()
+                extracted_text += page_text + "\n"
+                logger.info("Extracted text from page %d", page_num + 1)
+            except Exception as e:
+                logger.warning("Error extracting text from page %d: %s", page_num + 1, str(e))
+                continue
+        
+        if not extracted_text.strip():
+            logger.warning("No text could be extracted from PDF")
+            return jsonify({"error": "No text could be extracted from the PDF. The file might be image-based or corrupted."}), 400
+        
+        logger.info("Successfully extracted %d characters from PDF", len(extracted_text))
+        
+        # Check if extracted text is too long for processing
+        MAX_TEXT_LENGTH = 50000  # Adjust based on your OpenAI token limits
+        if len(extracted_text) > MAX_TEXT_LENGTH:
+            logger.info("Text too long (%d chars), truncating to %d chars", len(extracted_text), MAX_TEXT_LENGTH)
+            extracted_text = extracted_text[:MAX_TEXT_LENGTH] + "\n[Text truncated due to length...]"
+        
+        # Generate summary using existing function
+        summary = summarizeText(extracted_text)
+        
+        logger.info("PDF processing successful for user %s", username)
+        return jsonify({
+            "summary": summary,
+            "extracted_text_length": len(extracted_text),
+            "filename": pdf_file.filename
+        }), 200
+    
+    except Exception as e:
+        logger.error("Error processing PDF for user %s: %s", username, str(e))
+        return jsonify({"error": f"Error processing PDF: {str(e)}"}), 500
+
+
+# Optional: Add a route to just extract text without summarizing
+@app.route('/extract-pdf-text', methods=['POST'])
+@auth_required
+def extract_pdf_text():
+    username = request.username
+    logger.info("PDF text extraction request from user: %s", username)
+    
+    # Similar validation as above...
+    if 'pdf' not in request.files:
+        return jsonify({"error": "No PDF file provided"}), 400
+    
+    pdf_file = request.files['pdf']
+    if pdf_file.filename == '' or not pdf_file.filename.lower().endswith('.pdf'):
+        return jsonify({"error": "Invalid PDF file"}), 400
+    
+    try:
+        pdf_data = pdf_file.read()
+        pdf_reader = PyPDF2.PdfReader(BytesIO(pdf_data))
+        
+        extracted_text = ""
+        for page in pdf_reader.pages:
+            extracted_text += page.extract_text() + "\n"
+        
+        if not extracted_text.strip():
+            return jsonify({"error": "No text could be extracted from the PDF"}), 400
+        
+        return jsonify({
+            "text": extracted_text,
+            "length": len(extracted_text),
+            "pages": len(pdf_reader.pages),
+            "filename": pdf_file.filename
+        }), 200
+    
+    except Exception as e:
+        logger.error("Error extracting text from PDF: %s", str(e))
+        return jsonify({"error": f"Error extracting text: {str(e)}"}), 500
 
 #route to add note to db
 @app.post('/postNote')
