@@ -269,23 +269,32 @@ def getTranscript(video_id):
     try:
         logger.info("Fetching transcript for video ID: %s", video_id)
         
-        # Try a different language format if available
-        languages = ['en', 'en-US', 'en-GB', 'a.en']
-        
-        for lang in languages:
+        # Try to get the transcript with detailed debug info
+        try:
+            transcript_list = youtube_transcript_api.fetch(video_id)
+            logger.info("Raw transcript data type: %s", type(transcript_list))
+            
+            raw_data = transcript_list.to_raw_data()
+            logger.info("Raw data: %s", str(raw_data)[:100])
+            
+            transcript = ' '.join([item['text'] for item in raw_data])
+            logger.info("Transcript fetched successfully for video ID: %s (%d characters)", 
+                       video_id, len(transcript))
+            return transcript
+            
+        except Exception as fetch_err:
+            logger.error("Detailed fetch error: %s", str(fetch_err))
+            
+            # Try listing available transcripts for debug
             try:
-                transcript_list = youtube_transcript_api.fetch(video_id, languages=[lang])
-                transcript = ' '.join([item['text'] for item in transcript_list.to_raw_data()])
-                logger.info("Transcript fetched successfully for video ID: %s in language %s (%d characters)", 
-                           video_id, lang, len(transcript))
-                return transcript
-            except Exception as lang_err:
-                logger.warning("Failed to get transcript in language %s: %s", lang, str(lang_err))
-                continue
-                
-        # If we get here, all language attempts failed
-        raise Exception("Could not fetch transcript in any language")
-        
+                available = youtube_transcript_api.list_transcripts(video_id)
+                languages = [t.language_code for t in available]
+                logger.info("Available transcript languages: %s", languages)
+            except Exception as list_err:
+                logger.error("Failed to list available transcripts: %s", str(list_err))
+            
+            raise fetch_err
+            
     except Exception as e:
         logger.error("Error getting transcript for video ID %s: %s", video_id, str(e))
         raise Exception(f"Error getting transcript: {str(e)}")
