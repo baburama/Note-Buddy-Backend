@@ -20,6 +20,8 @@ from urllib.parse import urlparse, parse_qs
 # Import SSL module at the top of your file
 import ssl
 import urllib3
+import requests
+
 
 
 # Configure logging
@@ -266,10 +268,24 @@ def login():
 def getTranscript(video_id):
     try:
         logger.info("Fetching transcript for video ID: %s", video_id)
-        transcript_list = youtube_transcript_api.fetch(video_id).to_raw_data()
-        transcript = ' '.join([item['text'] for item in transcript_list])
-        logger.info("Transcript fetched successfully for video ID: %s (%d characters)", video_id, len(transcript))
-        return transcript
+        
+        # Try a different language format if available
+        languages = ['en', 'en-US', 'en-GB', 'a.en']
+        
+        for lang in languages:
+            try:
+                transcript_list = youtube_transcript_api.fetch(video_id, languages=[lang])
+                transcript = ' '.join([item['text'] for item in transcript_list.to_raw_data()])
+                logger.info("Transcript fetched successfully for video ID: %s in language %s (%d characters)", 
+                           video_id, lang, len(transcript))
+                return transcript
+            except Exception as lang_err:
+                logger.warning("Failed to get transcript in language %s: %s", lang, str(lang_err))
+                continue
+                
+        # If we get here, all language attempts failed
+        raise Exception("Could not fetch transcript in any language")
+        
     except Exception as e:
         logger.error("Error getting transcript for video ID %s: %s", video_id, str(e))
         raise Exception(f"Error getting transcript: {str(e)}")
