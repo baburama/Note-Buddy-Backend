@@ -17,15 +17,6 @@ import logging
 import certifi
 from urllib.parse import urlparse, parse_qs
 
-#youtube api
-import google.oauth2.credentials
-import googleapiclient.discovery
-import os
-import re
-import html
-import time
-from googleapiclient import errors as googleapiclient_errors
-
 
 # Configure logging
 logging.basicConfig(
@@ -121,15 +112,6 @@ try:
     logger.info("Created unique index on username field")
 except Exception as e:
     logger.warning("Failed to create index: %s", str(e))
-# Add this after your other MongoDB collection initializations
-transcript_cache_collection = db['TranscriptCache']
-
-# Create index for faster lookups
-try:
-    transcript_cache_collection.create_index([('video_id', pymongo.ASCENDING)], unique=True)
-    logger.info("Created index on TranscriptCache collection")
-except Exception as e:
-    logger.warning(f"Failed to create index on TranscriptCache: {str(e)}")
 
 # Initialize OpenAI client
 try:
@@ -263,182 +245,19 @@ def login():
     except Exception as e:
         logger.error("Login failed: %s", str(e))
         return jsonify({"error": f"Login failed: {str(e)}"}), 500
-def get_youtube_client():
-    """Get an authenticated YouTube client using service account credentials."""
-    try:
-        # Create credentials using the stored refresh token
-        credentials = google.oauth2.credentials.Credentials(
-            None,  # No access token needed, will be generated using refresh token
-            refresh_token=os.getenv("YOUTUBE_REFRESH_TOKEN"),
-            token_uri=os.getenv("YOUTUBE_TOKEN_URI", "https://oauth2.googleapis.com/token"),
-            client_id=os.getenv("YOUTUBE_CLIENT_ID"),
-            client_secret=os.getenv("YOUTUBE_CLIENT_SECRET"),
-            scopes=['https://www.googleapis.com/auth/youtube.force-ssl']
-        )
-        
-        # Build the YouTube service
-        youtube = googleapiclient.discovery.build(
-            'youtube', 'v3', credentials=credentials)
-        
-        return youtube
-    except Exception as e:
-        logger.error(f"Error getting YouTube client: {str(e)}")
-        raise Exception(f"Failed to authenticate with YouTube: {str(e)}")
-def handle_youtube_api_error(error):
-    """Extract meaningful error messages from YouTube API errors."""
-    error_str = str(error)
-    
-    if isinstance(error, googleapiclient_errors.HttpError):
-        status_code = error.resp.status
-        
-        if status_code == 401:
-            return "YouTube API authentication failed. Refresh token may have expired."
-        elif status_code == 403:
-            if "quotaExceeded" in error_str:
-                return "YouTube API quota exceeded for today. Try again tomorrow."
-            else:
-                return "Access to YouTube API forbidden. Check permissions."
-        elif status_code == 404:
-            return "Video or captions not found."
-        else:
-            return f"YouTube API error {status_code}: {error_str}"
-    else:
-        return f"YouTube API error: {error_str}"
 
 # Function to get transcript using youtube_transcript_api with proxy support
 def getTranscript(video_id):
-    """Get transcript using YouTube API with OAuth."""
     try:
-        # First check the cache
-        cached_transcript = transcript_cache_collection.find_one({'video_id': video_id})
-        if cached_transcript and 'transcript' in cached_transcript:
-            logger.info(f"Using cached transcript for video ID: {video_id}")
-            return cached_transcript['transcript']
-        
-        method = "unknown"  # Track which method succeeded
-        
-        # Try the YouTube API OAuth method first
-        try:
-            logger.info(f"Trying OAuth method for video ID: {video_id}")
-            
-            # Get authenticated YouTube client
-            youtube = get_youtube_client()
-            
-            # List captions for the video
-            logger.info(f"Fetching captions for video ID: {video_id}")
-            captions_response = youtube.captions().list(
-                part="snippet",
-                videoId=video_id
-            ).execute()
-            
-            caption_items = captions_response.get("items", [])
-            
-            if not caption_items:
-                logger.warning(f"No captions found for video ID: {video_id}")
-                raise Exception("No captions available via YouTube API")
-            
-            # Find English captions or use the first available
-            caption_id = None
-            for item in caption_items:
-                if item["snippet"]["language"] == "en":
-                    caption_id = item["id"]
-                    logger.info(f"Found English captions: {caption_id}")
-                    break
-            
-            if not caption_id and caption_items:
-                caption_id = caption_items[0]["id"]
-                language = caption_items[0]["snippet"]["language"]
-                logger.info(f"Using non-English captions: {language}")
-            
-            # Download the caption track
-            logger.info(f"Downloading caption track: {caption_id}")
-            caption_response = youtube.captions().download(
-                id=caption_id,
-                tfmt="srt"  # SubRip format
-            ).execute()
-            
-            # Parse SRT format to extract text
-            if isinstance(caption_response, bytes):
-                srt_content = caption_response.decode('utf-8')
-            else:
-                srt_content = str(caption_response)
-            
-            # Extract text from SRT using regex
-            text_pattern = r'\d+\s+\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}\s+(.*?)(?=\n\n|\Z)'
-            matches = re.findall(text_pattern, srt_content, re.DOTALL)
-            
-            if not matches:
-                logger.warning(f"Failed to extract text from SRT format for video ID: {video_id}")
-                raise Exception("Failed to extract transcript text from captions")
-            
-            transcript_parts = []
-            for match in matches:
-                clean_text = html.unescape(match.replace('\n', ' ').strip())
-                if clean_text:
-                    transcript_parts.append(clean_text)
-            
-            transcript = ' '.join(transcript_parts)
-            method = "oauth"
-            logger.info(f"OAuth method succeeded for video ID: {video_id}")
-            
-        except Exception as api_error:
-            # If YouTube API OAuth method fails, try youtube_transcript_api directly
-            logger.warning(f"YouTube OAuth API method failed: {str(api_error)}")
-            
-            try:
-                # Try using youtube_transcript_api directly first
-                logger.info(f"Trying youtube_transcript_api directly for video ID: {video_id}")
-                from youtube_transcript_api import YouTubeTranscriptApi
-                
-                transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['en'])
-                transcript = ' '.join([item['text'] for item in transcript_list])
-                method = "direct_api"
-                logger.info(f"Direct youtube_transcript_api succeeded for video ID: {video_id}")
-                
-            except Exception as direct_error:
-                logger.warning(f"Direct youtube_transcript_api failed: {str(direct_error)}")
-                
-                # Fall back to the proxy method as a last resort
-                try:
-                    logger.info(f"Falling back to proxy method for video ID: {video_id}")
-                    transcript_list = youtube_transcript_api.fetch(video_id).to_raw_data()
-                    transcript = ' '.join([item['text'] for item in transcript_list])
-                    method = "proxy"
-                    logger.info(f"Proxy method succeeded for video ID: {video_id}")
-                    
-                except Exception as proxy_error:
-                    logger.error(f"All transcript methods failed")
-                    logger.error(f"OAuth error: {str(api_error)}")
-                    logger.error(f"Direct API error: {str(direct_error)}")
-                    logger.error(f"Proxy error: {str(proxy_error)}")
-                    
-                    # Provide a detailed error message
-                    raise Exception(
-                        f"Unable to get transcript for this video. The video may not have captions, "
-                        f"or captions may be disabled. Please try a different video."
-                    )
-        
-        # Cache the transcript regardless of which method worked
-        logger.info(f"Caching transcript for video ID: {video_id} (method: {method})")
-        transcript_cache_collection.update_one(
-            {'video_id': video_id},  # Filter
-            {                        # Update
-                '$set': {
-                    'video_id': video_id,
-                    'transcript': transcript,
-                    'method': method,  # Store which method worked
-                    'created_at': datetime.datetime.utcnow()
-                }
-            },
-            upsert=True              # Create if doesn't exist
-        )
-        
-        logger.info(f"Transcript fetched successfully ({len(transcript)} characters)")
+        logger.info("Fetching transcript for video ID: %s", video_id)
+        transcript_list = youtube_transcript_api.fetch(video_id).to_raw_data()
+        transcript = ' '.join([item['text'] for item in transcript_list])
+        logger.info("Transcript fetched successfully for video ID: %s (%d characters)", video_id, len(transcript))
         return transcript
-        
     except Exception as e:
-        logger.error(f"Error getting transcript: {str(e)}")
+        logger.error("Error getting transcript for video ID %s: %s", video_id, str(e))
         raise Exception(f"Error getting transcript: {str(e)}")
+
 @app.post('/summary')
 @auth_required
 def summary():
@@ -455,34 +274,12 @@ def summary():
         return jsonify(error="Could not extract video ID from URL"), 400
 
     try:
-        # Start timer for performance monitoring
-        start_time = time.time()
-        
-        # Try to get transcript with either API or proxy method
         transcript = getTranscript(video_id)
-        
-        # Generate summary
         summary = summarizeText(transcript)
-        
-        # Calculate time taken
-        time_taken = time.time() - start_time
-        
-        return jsonify({
-            'Summary': summary, 
-            'processingTime': round(time_taken, 2)
-        }), 200
-        
+        return jsonify({'Summary': summary}), 200
     except Exception as e:
-        error_message = str(e)
-        logger.error(f"Summary generation failed: {error_message}")
-        
-        # Provide a more user-friendly error message
-        if "No captions available" in error_message:
-            return jsonify({'error': "This video doesn't have captions available."}), 404
-        elif "Failed to authenticate with YouTube" in error_message:
-            return jsonify({'error': "Authentication issue with YouTube. Please try again later."}), 500
-        else:
-            return jsonify({'error': error_message}), 500
+        return jsonify({'error': str(e)}), 500
+
 def summarizeText(text):
     try:
         logger.info("Summarizing text (%d characters)", len(text))
@@ -836,8 +633,7 @@ def health_check():
         'mongodb': False,
         'openai': False,
         'assemblyai': False,
-        'youtube_proxy': True,
-        'youtube_api': False  # Add YouTube API status
+        'youtube_proxy': True  # We're now using hardcoded credentials if env vars aren't set
     }
     
     # Check MongoDB connection
@@ -863,59 +659,13 @@ def health_check():
         logger.error("Health check - AssemblyAI API key missing or invalid")
         status['status'] = 'degraded'
     
-    # Check YouTube API credentials
-    if os.getenv("YOUTUBE_REFRESH_TOKEN") and os.getenv("YOUTUBE_CLIENT_ID") and os.getenv("YOUTUBE_CLIENT_SECRET"):
-        status['youtube_api'] = True
-    else:
-        logger.warning("Health check - YouTube API credentials missing")
-        # Not marking as degraded since we have proxy fallback
-    
     if status['status'] == 'healthy':
         logger.info("Health check passed")
         return jsonify(status), 200
     else:
         logger.warning("Health check returned degraded status")
         return jsonify(status), 200  # Still return 200 for uptime monitoring
-@app.get("/transcript-cache-stats")
-@auth_required
-def transcript_cache_stats():
-    """Get statistics about the transcript cache."""
-    try:
-        # Count total cached transcripts
-        total_count = transcript_cache_collection.count_documents({})
-        
-        # Get size statistics (approximate)
-        stats = list(transcript_cache_collection.aggregate([
-            {
-                "$group": {
-                    "_id": None,
-                    "avgSize": {"$avg": {"$strLenCP": "$transcript"}},
-                    "totalSize": {"$sum": {"$strLenCP": "$transcript"}},
-                    "minSize": {"$min": {"$strLenCP": "$transcript"}},
-                    "maxSize": {"$max": {"$strLenCP": "$transcript"}}
-                }
-            }
-        ]))
-        
-        # Get the 5 most recently cached transcripts
-        recent = list(transcript_cache_collection.find(
-            {}, 
-            {"video_id": 1, "created_at": 1}
-        ).sort("created_at", -1).limit(5))
-        
-        # Convert ObjectId to string for JSON serialization
-        for item in recent:
-            item["_id"] = str(item["_id"])
-        
-        return jsonify({
-            "total_cached": total_count,
-            "stats": stats[0] if stats else {},
-            "recent": recent
-        }), 200
-        
-    except Exception as e:
-        logger.error(f"Error getting transcript cache stats: {str(e)}")
-        return jsonify({"error": f"Error getting transcript cache stats: {str(e)}"}), 500
+
 if __name__ == "__main__":
     logger.info("Starting NoteBuddy API server")
     
