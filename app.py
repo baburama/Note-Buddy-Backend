@@ -48,9 +48,10 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY")
 
 # Initialize YouTube Transcript API with proxy
+#debug for expiration
 PROXY_HOST = "2isphj01.pr.thordata.net"
 PROXY_PORT = "9999"
-PROXY_USERNAME = "td-customer-GjlMS7dbw6w1-sessid-all194wi4b12ga5776-sesstime-10"
+PROXY_USERNAME = "td-customer-GjlMS7dbw6w1-sessid-alll3s09ym5pbuy713-sesstime-10"
 PROXY_PASSWORD = "oJSdDwmajn1h"
 
 # Format the proxy URL with authentication credentials
