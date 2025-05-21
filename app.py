@@ -53,7 +53,7 @@ ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY")
 # Initialize YouTube Transcript API with proxy
 PROXY_HOST = "2isphj01.pr.thordata.net"
 PROXY_PORT = "9999"
-PROXY_USERNAME = "td-customer-GjlMS7dbw6w1"
+PROXY_USERNAME = "td-customer-GjlMS7dbw6w1-sessid-allt85fxn76jzjz451-sesstime-10"
 PROXY_PASSWORD = "oJSdDwmajn1h"
 
 # Format the proxy URL with authentication credentials
