@@ -310,155 +310,59 @@ else:
     logger.warning("Skipping YouTube API test as client initialization failed")
 # Function to get transcript using youtube_transcript_api with proxy support
 def getTranscript(video_id):
-    """
-    Get transcript for a YouTube video with detailed debugging to troubleshoot API issues.
-    """
     try:
-        logger.info("Fetching transcript for video ID: %s using official API", video_id)
+        logger.info(f"Fetching transcript for video ID: {video_id} using AssemblyAI")
         
-        # Debug: Check if API key is available and valid format
-        api_key_masked = YOUTUBE_API_KEY[:6] + "..." + YOUTUBE_API_KEY[-4:] if YOUTUBE_API_KEY else "None"
-        logger.info("Using YouTube API Key (masked): %s", api_key_masked)
+        # YouTube video URL
+        youtube_url = f"https://www.youtube.com/watch?v={video_id}"
         
-        # Debug: Verify YouTube client is initialized
-        if not youtube_client:
-            logger.error("YouTube API client not initialized")
-            raise Exception("YouTube API client not initialized - check your API key")
+        # AssemblyAI API endpoint and headers
+        transcript_endpoint = "https://api.assemblyai.com/v2/transcript"
+        headers = {
+            "authorization": ASSEMBLYAI_API_KEY,
+            "content-type": "application/json"
+        }
         
-        # Debug: Test API access with a simple call first
-        try:
-            logger.info("Testing API access with videos.list call")
-            test_response = youtube_client.videos().list(
-                part="snippet",
-                id=video_id
-            ).execute()
+        # Request body with the YouTube URL
+        data = {
+            "audio_url": youtube_url,
+            "language_code": "en"
+        }
+        
+        # Submit the transcription request
+        logger.info("Submitting YouTube URL to AssemblyAI")
+        response = requests.post(transcript_endpoint, json=data, headers=headers)
+        
+        if response.status_code != 200:
+            logger.error(f"AssemblyAI request failed: {response.text}")
+            raise Exception(f"AssemblyAI request failed: {response.text}")
+        
+        transcript_id = response.json()["id"]
+        logger.info(f"Transcription request submitted, ID: {transcript_id}")
+        
+        # Poll for the transcription result
+        polling_endpoint = f"https://api.assemblyai.com/v2/transcript/{transcript_id}"
+        
+        logger.info("Polling for transcription result...")
+        
+        # Poll until transcription is complete
+        while True:
+            polling_response = requests.get(polling_endpoint, headers=headers)
+            polling_result = polling_response.json()
             
-            video_title = test_response.get('items', [{}])[0].get('snippet', {}).get('title', 'Unknown')
-            logger.info("API access test successful - Video title: %s", video_title)
-        except Exception as test_err:
-            logger.error("API access test failed: %s", str(test_err))
-            raise Exception(f"YouTube API access test failed: {str(test_err)}")
-        
-        # Step 1: Get the captions for the video
-        logger.info("Requesting caption list for video ID: %s", video_id)
-        captions_response = youtube_client.captions().list(
-            part="snippet",
-            videoId=video_id
-        ).execute()
-        
-        # Debug: Log raw caption response (first 200 chars)
-        caption_debug = str(captions_response)[:200] + "..." if len(str(captions_response)) > 200 else str(captions_response)
-        logger.info("Caption list response: %s", caption_debug)
-        
-        caption_items = captions_response.get("items", [])
-        logger.info("Found %d caption track(s)", len(caption_items))
-        
-        if not caption_items:
-            logger.warning("No captions found for video ID: %s", video_id)
-            raise Exception("No captions available for this video")
-        
-        # Debug: Log all available caption tracks
-        for idx, item in enumerate(caption_items):
-            lang = item["snippet"]["language"]
-            track_type = item["snippet"].get("trackKind", "Unknown")
-            logger.info("Caption track %d: Language=%s, Type=%s, ID=%s", 
-                       idx+1, lang, track_type, item["id"])
-        
-        # Find English captions or use the first available
-        caption_id = None
-        english_captions = [item for item in caption_items if item["snippet"]["language"] == "en"]
-        
-        if english_captions:
-            caption_id = english_captions[0]["id"]
-            logger.info("Found English captions: %s", caption_id)
-        elif caption_items:
-            caption_id = caption_items[0]["id"]
-            logger.info("Using non-English captions in language: %s", 
-                       caption_items[0]["snippet"]["language"])
-        
-        # Step 2: Download the caption
-        logger.info("Downloading caption track: %s", caption_id)
-        try:
-            caption_response = youtube_client.captions().download(
-                id=caption_id,
-                tfmt="srt"  # SubRip format
-            ).execute()
+            status = polling_result['status']
             
-            if isinstance(caption_response, bytes):
-                content_length = len(caption_response)
-                logger.info("Downloaded caption data: %d bytes", content_length)
-                srt_content = caption_response.decode('utf-8')
+            if status == 'completed':
+                return polling_result['text']
+            elif status == 'error':
+                raise Exception(f"AssemblyAI transcription error: {polling_result.get('error', 'Unknown error')}")
             else:
-                content_type = type(caption_response).__name__
-                logger.info("Downloaded caption data: type=%s", content_type)
-                srt_content = str(caption_response)
-            
-            # Debug: Log sample of caption content
-            sample = srt_content[:200] + "..." if len(srt_content) > 200 else srt_content
-            logger.info("Caption content sample: %s", sample)
-            
-        except Exception as download_err:
-            logger.error("Caption download failed: %s", str(download_err))
-            raise Exception(f"Failed to download captions: {str(download_err)}")
-        
-        # Extract text from SRT format (ignoring timestamps)
-        text_pattern = r'\d+\s+\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}\s+(.*?)(?=\n\n|\Z)'
-        matches = re.findall(text_pattern, srt_content, re.DOTALL)
-        
-        if not matches:
-            logger.warning("Could not parse caption content with SRT pattern")
-            # Debug: Try a simpler pattern as fallback
-            alt_pattern = r'-->\s+(.*?)(?=\n\d+|\Z)'
-            matches = re.findall(alt_pattern, srt_content, re.DOTALL)
-            if not matches:
-                logger.error("Could not parse caption content with alternative pattern")
-                raise Exception("Failed to parse captions - invalid format received")
-        
-        # Clean up and combine all caption segments
-        logger.info("Extracted %d caption segments", len(matches))
-        transcript_parts = []
-        for match in matches:
-            # Replace line breaks and clean HTML entities
-            clean_text = html.unescape(match.replace('\n', ' ').strip())
-            if clean_text:
-                transcript_parts.append(clean_text)
-        
-        transcript = ' '.join(transcript_parts)
-        logger.info("Transcript processed successfully (%d characters)", len(transcript))
-        
-        return transcript
-        
-    except HttpError as e:
-        # Get detailed error information
-        status_code = e.resp.status
-        reason = e.resp.reason
-        
-        try:
-            error_content = e.content.decode('utf-8') if hasattr(e.content, 'decode') else str(e.content)
-        except:
-            error_content = "Could not decode error content"
-        
-        logger.error("YouTube API error: %d %s - %s", status_code, reason, error_content)
-        
-        # Provide specific troubleshooting steps based on error code
-        if status_code == 400:
-            error_message = "Bad request - invalid video ID or parameters"
-        elif status_code == 401:
-            error_message = "Authentication failed - check your API key and make sure the YouTube Data API is enabled"
-        elif status_code == 403:
-            if 'quota' in error_content.lower():
-                error_message = "YouTube API quota exceeded for today"
-            else:
-                error_message = "Access forbidden - check API key restrictions"
-        elif status_code == 404:
-            error_message = "Resource not found - video may not exist or have captions"
-        else:
-            error_message = f"YouTube API error: {status_code} {reason}"
-        
-        raise Exception(error_message)
-        
+                # Wait a few seconds before polling again
+                logger.info(f"Transcription status: {status}, waiting...")
+                time.sleep(5)
+    
     except Exception as e:
-        logger.error("Error getting transcript for video ID %s: %s", video_id, str(e))
+        logger.error(f"Error getting transcript for video ID {video_id}: {str(e)}")
         raise Exception(f"Error getting transcript: {str(e)}")
 @app.post('/summary')
 @auth_required
