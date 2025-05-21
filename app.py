@@ -21,6 +21,10 @@ from urllib.parse import urlparse, parse_qs
 import ssl
 import urllib3
 import requests
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+import re
+import html
 
 
 
@@ -52,6 +56,8 @@ if MONGODB_URI and "retryWrites" not in MONGODB_URI:
         MONGODB_URI += "?retryWrites=true"
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY")
+YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "AIzaSyBY0nY2kk7G7yCCvU0wwPnXRAxWTxF3RDc")
+
 
 # Initialize YouTube Transcript API with proxy
 #debug for expiration
@@ -137,6 +143,13 @@ try:
     logger.info("OpenAI client initialized")
 except Exception as e:
     logger.critical("Failed to initialize OpenAI client: %s", str(e))
+#initialize youtube client
+try:
+    youtube_client = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
+    logger.info("YouTube API client initialized successfully")
+except Exception as e:
+    youtube_client = None
+    logger.critical("Failed to initialize YouTube API client: %s", str(e))
 
 # Add security headers
 @app.after_request
@@ -267,34 +280,80 @@ def login():
 # Function to get transcript using youtube_transcript_api with proxy support
 def getTranscript(video_id):
     try:
-        logger.info("Fetching transcript for video ID: %s", video_id)
+        logger.info("Fetching transcript for video ID: %s using official API", video_id)
         
-        # Try to get the transcript with detailed debug info
-        try:
-            transcript_list = youtube_transcript_api.fetch(video_id)
-            logger.info("Raw transcript data type: %s", type(transcript_list))
+        if not youtube_client:
+            raise Exception("YouTube API client not initialized")
             
-            raw_data = transcript_list.to_raw_data()
-            logger.info("Raw data: %s", str(raw_data)[:100])
+        # Step 1: Get the captions for the video
+        captions_response = youtube_client.captions().list(
+            part="snippet",
+            videoId=video_id
+        ).execute()
+        
+        caption_items = captions_response.get("items", [])
+        
+        if not caption_items:
+            logger.warning("No captions found for video ID: %s", video_id)
+            raise Exception("No captions available for this video")
             
-            transcript = ' '.join([item['text'] for item in raw_data])
-            logger.info("Transcript fetched successfully for video ID: %s (%d characters)", 
-                       video_id, len(transcript))
-            return transcript
+        # Find English captions or use the first available
+        caption_id = None
+        for item in caption_items:
+            if item["snippet"]["language"] == "en":
+                caption_id = item["id"]
+                logger.info("Found English captions")
+                break
+                
+        if not caption_id and caption_items:
+            caption_id = caption_items[0]["id"]
+            logger.info("Using non-English captions in language: %s", 
+                       caption_items[0]["snippet"]["language"])
             
-        except Exception as fetch_err:
-            logger.error("Detailed fetch error: %s", str(fetch_err))
+        # Step 2: Download the caption
+        caption_response = youtube_client.captions().download(
+            id=caption_id,
+            tfmt="srt"  # SubRip format
+        ).execute()
+        
+        # Parse the SRT formatted response
+        if isinstance(caption_response, bytes):
+            srt_content = caption_response.decode('utf-8')
+        else:
+            srt_content = caption_response
             
-            # Try listing available transcripts for debug
-            try:
-                available = youtube_transcript_api.list_transcripts(video_id)
-                languages = [t.language_code for t in available]
-                logger.info("Available transcript languages: %s", languages)
-            except Exception as list_err:
-                logger.error("Failed to list available transcripts: %s", str(list_err))
+        # Extract text from SRT format (ignoring timestamps)
+        text_pattern = r'\d+\s+\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}\s+(.*?)(?=\n\n|\Z)'
+        matches = re.findall(text_pattern, srt_content, re.DOTALL)
+        
+        if not matches:
+            logger.warning("Could not parse any captions from response")
+            raise Exception("Failed to parse captions")
             
-            raise fetch_err
-            
+        # Clean up and combine all caption segments
+        transcript_parts = []
+        for match in matches:
+            # Replace line breaks and clean HTML entities
+            clean_text = html.unescape(match.replace('\n', ' ').strip())
+            if clean_text:
+                transcript_parts.append(clean_text)
+                
+        transcript = ' '.join(transcript_parts)
+        logger.info("Transcript fetched successfully using official API (%d characters)", 
+                   len(transcript))
+        
+        return transcript
+        
+    except HttpError as e:
+        error_message = f"YouTube API error: {e.resp.status}"
+        if e.resp.status == 403:
+            if 'quota' in str(e.content):
+                error_message = "YouTube API quota exceeded for today"
+            else:
+                error_message = "YouTube API authentication error"
+        logger.error(error_message)
+        raise Exception(error_message)
+        
     except Exception as e:
         logger.error("Error getting transcript for video ID %s: %s", video_id, str(e))
         raise Exception(f"Error getting transcript: {str(e)}")
