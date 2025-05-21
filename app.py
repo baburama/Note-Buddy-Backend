@@ -16,6 +16,10 @@ import sys
 import logging
 import certifi
 from urllib.parse import urlparse, parse_qs
+# Format the proxy URL with authentication credentials
+# Import SSL module at the top of your file
+import ssl
+import urllib3
 
 
 # Configure logging
@@ -54,8 +58,19 @@ PROXY_PORT = "9999"
 PROXY_USERNAME = "td-customer-GjlMS7dbw6w1-sessid-alll3s09ym5pbuy713-sesstime-10"
 PROXY_PASSWORD = "oJSdDwmajn1h"
 
+
+
 # Format the proxy URL with authentication credentials
 proxy_url = f"http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}"
+
+# Configure SSL context
+ssl_context = ssl.create_default_context()
+ssl_context.check_hostname = False
+ssl_context.verify_mode = ssl.CERT_NONE
+ssl_context.set_ciphers('DEFAULT@SECLEVEL=1')
+
+# Disable SSL warnings for development only
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logger.info(f"Initializing YouTubeTranscriptApi with proxy: {PROXY_HOST}:{PROXY_PORT}")
 youtube_transcript_api = YouTubeTranscriptApi(
