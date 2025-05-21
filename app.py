@@ -315,8 +315,12 @@ def getTranscript(video_id):
             logger.info(f"Using cached transcript for video ID: {video_id}")
             return cached_transcript['transcript']
         
-        # Try the YouTube API method first
+        method = "unknown"  # Track which method succeeded
+        
+        # Try the YouTube API OAuth method first
         try:
+            logger.info(f"Trying OAuth method for video ID: {video_id}")
+            
             # Get authenticated YouTube client
             youtube = get_youtube_client()
             
@@ -363,6 +367,10 @@ def getTranscript(video_id):
             text_pattern = r'\d+\s+\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}\s+(.*?)(?=\n\n|\Z)'
             matches = re.findall(text_pattern, srt_content, re.DOTALL)
             
+            if not matches:
+                logger.warning(f"Failed to extract text from SRT format for video ID: {video_id}")
+                raise Exception("Failed to extract transcript text from captions")
+            
             transcript_parts = []
             for match in matches:
                 clean_text = html.unescape(match.replace('\n', ' ').strip())
@@ -370,29 +378,55 @@ def getTranscript(video_id):
                     transcript_parts.append(clean_text)
             
             transcript = ' '.join(transcript_parts)
+            method = "oauth"
+            logger.info(f"OAuth method succeeded for video ID: {video_id}")
             
         except Exception as api_error:
-            # If YouTube API method fails, fall back to the proxy method
-            logger.warning(f"YouTube API method failed: {str(api_error)}")
-            logger.info(f"Falling back to proxy method for video ID: {video_id}")
+            # If YouTube API OAuth method fails, try youtube_transcript_api directly
+            logger.warning(f"YouTube OAuth API method failed: {str(api_error)}")
             
             try:
-                # Try the original proxy-based method as fallback
-                transcript_list = youtube_transcript_api.fetch(video_id).to_raw_data()
+                # Try using youtube_transcript_api directly first
+                logger.info(f"Trying youtube_transcript_api directly for video ID: {video_id}")
+                from youtube_transcript_api import YouTubeTranscriptApi
+                
+                transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['en'])
                 transcript = ' '.join([item['text'] for item in transcript_list])
-            except Exception as proxy_error:
-                logger.error(f"Proxy method also failed: {str(proxy_error)}")
-                raise Exception(f"All transcript methods failed. API error: {str(api_error)}. Proxy error: {str(proxy_error)}")
+                method = "direct_api"
+                logger.info(f"Direct youtube_transcript_api succeeded for video ID: {video_id}")
+                
+            except Exception as direct_error:
+                logger.warning(f"Direct youtube_transcript_api failed: {str(direct_error)}")
+                
+                # Fall back to the proxy method as a last resort
+                try:
+                    logger.info(f"Falling back to proxy method for video ID: {video_id}")
+                    transcript_list = youtube_transcript_api.fetch(video_id).to_raw_data()
+                    transcript = ' '.join([item['text'] for item in transcript_list])
+                    method = "proxy"
+                    logger.info(f"Proxy method succeeded for video ID: {video_id}")
+                    
+                except Exception as proxy_error:
+                    logger.error(f"All transcript methods failed")
+                    logger.error(f"OAuth error: {str(api_error)}")
+                    logger.error(f"Direct API error: {str(direct_error)}")
+                    logger.error(f"Proxy error: {str(proxy_error)}")
+                    
+                    # Provide a detailed error message
+                    raise Exception(
+                        f"Unable to get transcript for this video. The video may not have captions, "
+                        f"or captions may be disabled. Please try a different video."
+                    )
         
         # Cache the transcript regardless of which method worked
-        logger.info(f"Caching transcript for video ID: {video_id}")
-        # Replace the insert_one with this
+        logger.info(f"Caching transcript for video ID: {video_id} (method: {method})")
         transcript_cache_collection.update_one(
             {'video_id': video_id},  # Filter
             {                        # Update
                 '$set': {
                     'video_id': video_id,
                     'transcript': transcript,
+                    'method': method,  # Store which method worked
                     'created_at': datetime.datetime.utcnow()
                 }
             },
