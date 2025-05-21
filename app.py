@@ -26,6 +26,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 import re
 import html
+import time
 
 
 
@@ -312,6 +313,7 @@ else:
 def getTranscript(video_id):
     try:
         logger.info(f"Fetching transcript for video ID: {video_id} using AssemblyAI")
+        import time  # Import time module locally if you can't add it at the top
         
         # YouTube video URL
         youtube_url = f"https://www.youtube.com/watch?v={video_id}"
@@ -345,21 +347,46 @@ def getTranscript(video_id):
         
         logger.info("Polling for transcription result...")
         
-        # Poll until transcription is complete
-        while True:
-            polling_response = requests.get(polling_endpoint, headers=headers)
-            polling_result = polling_response.json()
+        # Poll until transcription is complete (with timeout)
+        max_polls = 60  # Maximum polling attempts (5 min at 5-second intervals)
+        poll_count = 0
+        
+        while poll_count < max_polls:
+            poll_count += 1
             
+            polling_response = requests.get(polling_endpoint, headers=headers)
+            
+            if polling_response.status_code != 200:
+                logger.error(f"AssemblyAI polling failed: {polling_response.text}")
+                raise Exception(f"AssemblyAI polling failed: {polling_response.text}")
+                
+            polling_result = polling_response.json()
             status = polling_result['status']
             
+            logger.info(f"Transcription status ({poll_count}/{max_polls}): {status}")
+            
             if status == 'completed':
-                return polling_result['text']
+                transcript_text = polling_result['text']
+                logger.info(f"Transcription completed: {len(transcript_text)} characters")
+                return transcript_text
             elif status == 'error':
-                raise Exception(f"AssemblyAI transcription error: {polling_result.get('error', 'Unknown error')}")
-            else:
-                # Wait a few seconds before polling again
-                logger.info(f"Transcription status: {status}, waiting...")
-                time.sleep(5)
+                error_message = polling_result.get('error', 'Unknown error')
+                logger.error(f"AssemblyAI transcription error: {error_message}")
+                raise Exception(f"AssemblyAI transcription error: {error_message}")
+            elif status == 'processed':
+                # Sometimes 'processed' is returned but text is available
+                if 'text' in polling_result and polling_result['text']:
+                    transcript_text = polling_result['text']
+                    logger.info(f"Transcription processed: {len(transcript_text)} characters")
+                    return transcript_text
+                    
+            # If not complete, wait before polling again
+            logger.info(f"Waiting for transcription to complete... (attempt {poll_count}/{max_polls})")
+            time.sleep(5)  # Wait 5 seconds between polls
+            
+        # If we exit the loop, we've timed out
+        logger.error("Transcription timed out after maximum polling attempts")
+        raise Exception("Transcription timed out. Please try again later.")
     
     except Exception as e:
         logger.error(f"Error getting transcript for video ID {video_id}: {str(e)}")
