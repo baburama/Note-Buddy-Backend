@@ -279,6 +279,7 @@ def login():
 
 # Function to get transcript using youtube_transcript_api with proxy support
 def getTranscript(video_id):
+    logger.info("Using YouTube API Key: %s", YOUTUBE_API_KEY[:5] + "..." + YOUTUBE_API_KEY[-5:])
     try:
         logger.info("Fetching transcript for video ID: %s using official API", video_id)
         
