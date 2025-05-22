@@ -330,7 +330,7 @@ def getTranscriptSupadata(video_id):
         # Query parameters - using videoId and text=true for plain text response
         params = {
             "videoId": video_id,
-            "text": "true"
+            "text":  "true"
         }
         
         response = requests.get(base_url, headers=headers, params=params, timeout=30)
@@ -389,7 +389,7 @@ def test_supadata():
             'success': True,
             'video_id': video_id,
             'transcript_length': len(transcript),
-            'transcript_preview': transcript[:200] + "..." if len(transcript) > 200 else transcript
+            'full_transcript': transcript
         }), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
