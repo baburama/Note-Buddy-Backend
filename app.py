@@ -48,6 +48,8 @@ if MONGODB_URI and "retryWrites" not in MONGODB_URI:
         MONGODB_URI += "?retryWrites=true"
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY")
+SUPADATA_API_KEY = os.getenv("SUPADATA_API_KEY")
+
 
 # Initialize YouTube Transcript API with proxy
 PROXY_HOST = "2isphj01.pr.thordata.net"
@@ -313,6 +315,84 @@ def summarizeText(text):
     except Exception as e:
         logger.error("Error summarizing text: %s", str(e))
         raise Exception(f"Error summarizing text: {str(e)}")
+#transcript with supadata instead
+def getTranscriptSupadata(video_id):
+    try:
+        logger.info("Fetching transcript using Supadata API for video ID: %s", video_id)
+        
+        # Supadata API endpoint - using GET request with query parameters
+        base_url = "https://api.supadata.ai/v1/youtube/transcript"
+        
+        headers = {
+            "x-api-key": SUPADATA_API_KEY
+        }
+        
+        # Query parameters - using videoId and text=true for plain text response
+        params = {
+            "videoId": video_id,
+            "text": "true"
+        }
+        
+        response = requests.get(base_url, headers=headers, params=params, timeout=30)
+        
+        if response.status_code != 200:
+            logger.error("Supadata API request failed: %s", response.text)
+            raise Exception(f"Supadata API request failed: {response.text}")
+        
+        data = response.json()
+        
+        # Extract transcript from 'content' field as per API documentation
+        if 'content' not in data:
+            logger.error("Unexpected Supadata API response structure: %s", data)
+            raise Exception("No 'content' field in API response")
+        
+        transcript = data['content']
+        detected_lang = data.get('lang', 'unknown')
+        available_langs = data.get('availableLangs', [])
+        
+        logger.info("Transcript fetched successfully using Supadata for video ID: %s (%d characters), lang: %s", 
+                   video_id, len(transcript), detected_lang)
+        logger.info("Available languages: %s", available_langs)
+        
+        return transcript
+        
+    except requests.exceptions.Timeout:
+        logger.error("Supadata API request timed out for video ID: %s", video_id)
+        raise Exception("Supadata API request timed out")
+    except requests.exceptions.RequestException as e:
+        logger.error("Network error with Supadata API for video ID %s: %s", video_id, str(e))
+        raise Exception(f"Network error with Supadata API: {str(e)}")
+    except Exception as e:
+        logger.error("Error getting transcript from Supadata for video ID %s: %s", video_id, str(e))
+        raise Exception(f"Error getting transcript from Supadata: {str(e)}")
+# 6. Add helper route to test Supadata API connection
+@app.route('/test-supadata', methods=['POST'])
+@auth_required
+def test_supadata():
+    """Test route to verify Supadata API connectivity"""
+    data = request.get_json() or {}
+    url = data.get('URL','').strip()
+    
+    if not url:
+        return jsonify(error="URL required"), 400
+
+    parsed = urlparse(url)
+    qs = parse_qs(parsed.query)
+    video_id = qs.get('v', [None])[0]
+    
+    if not video_id:
+        return jsonify(error="Could not extract video ID from URL"), 400
+
+    try:
+        transcript = getTranscriptSupadata(video_id)
+        return jsonify({
+            'success': True,
+            'video_id': video_id,
+            'transcript_length': len(transcript),
+            'transcript_preview': transcript[:200] + "..." if len(transcript) > 200 else transcript
+        }), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 #pdf routes
 @app.route('/upload-pdf', methods=['POST'])
 @auth_required
