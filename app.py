@@ -278,7 +278,7 @@ def summary():
         return jsonify(error="Could not extract video ID from URL"), 400
 
     try:
-        transcript = getTranscriptSupadatas(video_id)
+        transcript = getTranscriptSupadata(video_id)
         summary = summarizeText(transcript)
         return jsonify({'Summary': summary}), 200
     except Exception as e:
